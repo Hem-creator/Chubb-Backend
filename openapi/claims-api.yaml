@@ -1,0 +1,665 @@
+openapi: 3.1.0
+info:
+  title: Chubb APAC Claims Management API
+  description: "Backend APIs for claim intake, review, settlement and workload dashboards"
+  version: v1
+servers:
+- url: http://localhost:8099
+  description: Generated server url
+paths:
+  /api/claims/{id}:
+    get:
+      tags:
+      - Claims
+      summary: Get a claim by id
+      operationId: getById
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: int64
+      responses:
+        "200":
+          description: OK
+          content:
+            '*/*':
+              schema:
+                $ref: "#/components/schemas/ApiResponseClaimResponse"
+    put:
+      tags:
+      - Claims
+      summary: Update a claim
+      operationId: update
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: int64
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateClaimRequest"
+        required: true
+      responses:
+        "200":
+          description: OK
+          content:
+            '*/*':
+              schema:
+                $ref: "#/components/schemas/ApiResponseClaimResponse"
+    delete:
+      tags:
+      - Claims
+      summary: Delete a claim and its notes
+      operationId: delete
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: int64
+      responses:
+        "200":
+          description: OK
+          content:
+            '*/*':
+              schema:
+                $ref: "#/components/schemas/ApiResponseVoid"
+  /api/claims/{id}/under-review:
+    put:
+      tags:
+      - Claim Workflow
+      summary: NEW or MORE_INFO_REQUIRED -> UNDER_REVIEW
+      operationId: underReview
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: int64
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TransitionRequest"
+      responses:
+        "200":
+          description: OK
+          content:
+            '*/*':
+              schema:
+                $ref: "#/components/schemas/ApiResponseClaimResponse"
+  /api/claims/{id}/settle:
+    put:
+      tags:
+      - Claim Workflow
+      summary: APPROVED -> SETTLED
+      operationId: settle
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: int64
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TransitionRequest"
+      responses:
+        "200":
+          description: OK
+          content:
+            '*/*':
+              schema:
+                $ref: "#/components/schemas/ApiResponseClaimResponse"
+  /api/claims/{id}/request-more-info:
+    put:
+      tags:
+      - Claim Workflow
+      summary: UNDER_REVIEW -> MORE_INFO_REQUIRED
+      operationId: requestMoreInfo
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: int64
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TransitionRequest"
+      responses:
+        "200":
+          description: OK
+          content:
+            '*/*':
+              schema:
+                $ref: "#/components/schemas/ApiResponseClaimResponse"
+  /api/claims/{id}/reject:
+    put:
+      tags:
+      - Claim Workflow
+      summary: UNDER_REVIEW -> REJECTED
+      operationId: reject
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: int64
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TransitionRequest"
+      responses:
+        "200":
+          description: OK
+          content:
+            '*/*':
+              schema:
+                $ref: "#/components/schemas/ApiResponseClaimResponse"
+  /api/claims/{id}/assign:
+    put:
+      tags:
+      - Claims Officer
+      summary: Assign (or reassign) the claim to an officer
+      operationId: assign
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: int64
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AssignClaimRequest"
+        required: true
+      responses:
+        "200":
+          description: OK
+          content:
+            '*/*':
+              schema:
+                $ref: "#/components/schemas/ApiResponseClaimResponse"
+  /api/claims/{id}/approve:
+    put:
+      tags:
+      - Claim Workflow
+      summary: UNDER_REVIEW -> APPROVED
+      operationId: approve
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: int64
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TransitionRequest"
+      responses:
+        "200":
+          description: OK
+          content:
+            '*/*':
+              schema:
+                $ref: "#/components/schemas/ApiResponseClaimResponse"
+  /api/claims:
+    get:
+      tags:
+      - Claims
+      summary: "List claims (paged), optionally filtered by status, officer or policy"
+      operationId: list
+      parameters:
+      - name: status
+        in: query
+        required: false
+        schema:
+          type: string
+          enum:
+          - NEW
+          - UNDER_REVIEW
+          - MORE_INFO_REQUIRED
+          - APPROVED
+          - REJECTED
+          - SETTLED
+      - name: assignedOfficer
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: policyNumber
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: pageable
+        in: query
+        required: true
+        schema:
+          $ref: "#/components/schemas/Pageable"
+      responses:
+        "200":
+          description: OK
+          content:
+            '*/*':
+              schema:
+                $ref: "#/components/schemas/ApiResponsePageResponseClaimResponse"
+    post:
+      tags:
+      - Claims
+      summary: "Create a claim (status NEW, claim number auto-generated)"
+      operationId: create
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateClaimRequest"
+        required: true
+      responses:
+        "200":
+          description: OK
+          content:
+            '*/*':
+              schema:
+                $ref: "#/components/schemas/ApiResponseClaimResponse"
+  /api/claims/{id}/notes:
+    get:
+      tags:
+      - Claims Officer
+      summary: "List the claim's notes, oldest first"
+      operationId: getNotes
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: int64
+      responses:
+        "200":
+          description: OK
+          content:
+            '*/*':
+              schema:
+                $ref: "#/components/schemas/ApiResponseListClaimNoteResponse"
+    post:
+      tags:
+      - Claims Officer
+      summary: Add a note to the claim
+      operationId: addNote
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: int64
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AddNoteRequest"
+        required: true
+      responses:
+        "200":
+          description: OK
+          content:
+            '*/*':
+              schema:
+                $ref: "#/components/schemas/ApiResponseClaimNoteResponse"
+  /api/claims/{id}/additional-info:
+    post:
+      tags:
+      - Claim Workflow
+      summary: "Claimant submits requested information: MORE_INFO_REQUIRED -> UNDER_REVIEW"
+      operationId: additionalInfo
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: int64
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdditionalInfoRequest"
+        required: true
+      responses:
+        "200":
+          description: OK
+          content:
+            '*/*':
+              schema:
+                $ref: "#/components/schemas/ApiResponseClaimResponse"
+  /api/officers/{officer}/workload:
+    get:
+      tags:
+      - Dashboard
+      summary: Personal workload of one officer (matched on the exact assigned-officer
+        name)
+      operationId: workload
+      parameters:
+      - name: officer
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        "200":
+          description: OK
+          content:
+            '*/*':
+              schema:
+                $ref: "#/components/schemas/OfficerWorkloadResponse"
+  /api/dashboard/workload:
+    get:
+      tags:
+      - Dashboard
+      summary: "Team workload: open claims, liability exposure, status distribution,\
+        \ claims per officer"
+      operationId: workload_1
+      responses:
+        "200":
+          description: OK
+          content:
+            '*/*':
+              schema:
+                $ref: "#/components/schemas/DashboardResponse"
+  /api/claims/claim-number/{claimNumber}:
+    get:
+      tags:
+      - Claims
+      summary: Get a claim by claim number
+      operationId: getByClaimNumber
+      parameters:
+      - name: claimNumber
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        "200":
+          description: OK
+          content:
+            '*/*':
+              schema:
+                $ref: "#/components/schemas/ApiResponseClaimResponse"
+components:
+  schemas:
+    UpdateClaimRequest:
+      type: object
+      properties:
+        claimantName:
+          type: string
+          maxLength: 150
+          minLength: 0
+        claimantEmail:
+          type: string
+          maxLength: 150
+          minLength: 0
+        description:
+          type: string
+          maxLength: 2000
+          minLength: 0
+        incidentDate:
+          type: string
+          format: date
+        claimAmount:
+          type: number
+          minimum: 0.0
+        liabilityExposure:
+          type: number
+          minimum: 0.0
+      required:
+      - claimAmount
+      - incidentDate
+      - liabilityExposure
+    ApiResponseClaimResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/ClaimResponse"
+    ClaimResponse:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        claimNumber:
+          type: string
+        claimantName:
+          type: string
+        claimantEmail:
+          type: string
+        policyNumber:
+          type: string
+        description:
+          type: string
+        incidentDate:
+          type: string
+          format: date
+        claimAmount:
+          type: number
+        liabilityExposure:
+          type: number
+        status:
+          type: string
+          enum:
+          - NEW
+          - UNDER_REVIEW
+          - MORE_INFO_REQUIRED
+          - APPROVED
+          - REJECTED
+          - SETTLED
+        assignedOfficer:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    TransitionRequest:
+      type: object
+      properties:
+        note:
+          type: string
+          maxLength: 4000
+          minLength: 0
+    AssignClaimRequest:
+      type: object
+      properties:
+        officer:
+          type: string
+          maxLength: 150
+          minLength: 0
+    CreateClaimRequest:
+      type: object
+      properties:
+        claimantName:
+          type: string
+          maxLength: 150
+          minLength: 0
+        claimantEmail:
+          type: string
+          maxLength: 150
+          minLength: 0
+        policyNumber:
+          type: string
+          maxLength: 50
+          minLength: 0
+        description:
+          type: string
+          maxLength: 2000
+          minLength: 0
+        incidentDate:
+          type: string
+          format: date
+        claimAmount:
+          type: number
+          minimum: 0.0
+        liabilityExposure:
+          type: number
+          minimum: 0.0
+      required:
+      - claimAmount
+      - incidentDate
+      - liabilityExposure
+    AddNoteRequest:
+      type: object
+      properties:
+        note:
+          type: string
+          maxLength: 4000
+          minLength: 0
+    ApiResponseClaimNoteResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/ClaimNoteResponse"
+    ClaimNoteResponse:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        claimId:
+          type: integer
+          format: int64
+        note:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+    AdditionalInfoRequest:
+      type: object
+      properties:
+        information:
+          type: string
+          maxLength: 3900
+          minLength: 0
+    OfficerWorkloadResponse:
+      type: object
+      properties:
+        officer:
+          type: string
+        openClaims:
+          type: integer
+          format: int64
+        totalLiabilityExposure:
+          type: number
+        claimsByStatus:
+          type: object
+          additionalProperties:
+            type: integer
+            format: int64
+    DashboardResponse:
+      type: object
+      properties:
+        totalOpenClaims:
+          type: integer
+          format: int64
+        totalLiabilityExposure:
+          type: number
+        claimsByStatus:
+          type: object
+          additionalProperties:
+            type: integer
+            format: int64
+        claimsPerOfficer:
+          type: object
+          additionalProperties:
+            type: integer
+            format: int64
+    Pageable:
+      type: object
+      properties:
+        page:
+          type: integer
+          format: int32
+          minimum: 0
+        size:
+          type: integer
+          format: int32
+          minimum: 1
+        sort:
+          type: array
+          items:
+            type: string
+    ApiResponsePageResponseClaimResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/PageResponseClaimResponse"
+    PageResponseClaimResponse:
+      type: object
+      properties:
+        content:
+          type: array
+          items:
+            $ref: "#/components/schemas/ClaimResponse"
+        page:
+          type: integer
+          format: int32
+        size:
+          type: integer
+          format: int32
+        totalElements:
+          type: integer
+          format: int64
+        totalPages:
+          type: integer
+          format: int32
+    ApiResponseListClaimNoteResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        message:
+          type: string
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/ClaimNoteResponse"
+    ApiResponseVoid:
+      type: object
+      properties:
+        success:
+          type: boolean
+        message:
+          type: string
+        data:
+          type: object
