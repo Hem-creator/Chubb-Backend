@@ -25,6 +25,6 @@ Short log, newest context last. Format: decision – reason – consequence.
 13. **Response envelope `{success, message, data}`** for claim APIs and errors; dashboard and officer workload return
     bare JSON as specified.
 14. **Hand-written mappers, records for DTOs, constructor injection.** No MapStruct (not in the dependency list).
-15. **H2 for the assessment, PostgreSQL + Flyway for production.** `ddl-auto=update` is a development convenience.
+15. **H2 in-memory database.** Zero setup; `ddl-auto=update` is a development convenience.
 16. **Officer is a plain string.** Matches the specified model; the workload endpoint matches the exact name.
 17. **No authentication in this version.** Out of the written requirements; listed under future enhancements.

@@ -8,7 +8,7 @@ relational database and publishes lifecycle events to Kafka for other systems.
 ```mermaid
 flowchart LR
     C[Claimant / Officer / Manager] -->|REST| A[Claims service]
-    A --> D[(H2 / PostgreSQL)]
+    A --> D[(H2)]
     A -->|events| K{{Kafka}}
     K --> N[Notification service]
     K --> R[Reporting / analytics]
@@ -104,7 +104,7 @@ All metrics are JPQL aggregations in `ClaimRepository`; no claim rows are loaded
 | Decision | Benefit | Cost |
 |---|---|---|
 | Single deployable (modular monolith) | Simple to build, test and run; one transaction boundary | Scales as one unit; module boundaries are by convention only |
-| H2 in-memory | Zero setup for the assessment | Data lost on restart; dialect differences from PostgreSQL |
+| H2 in-memory | Zero setup for the assessment | Data lost on restart |
 | `ddl-auto=update` | Fast iteration | Not safe for production; needs Flyway/Liquibase |
 | Publish after commit, best effort | Never emits events for rolled-back data; broker outage does not break the API | An event can be lost if the process dies between commit and send, or the broker is down |
 | Hand-written mappers | No extra dependency, explicit | More boilerplate than MapStruct |
@@ -116,7 +116,8 @@ All metrics are JPQL aggregations in `ClaimRepository`; no claim rows are loaded
 
 ## Future enhancements
 
-- **PostgreSQL + Flyway**: real migrations, `ddl-auto=validate`, indexes reviewed against production queries.
+- **Schema migrations (Flyway/Liquibase)**: versioned migrations and `ddl-auto=validate` instead of
+  `ddl-auto=update`, indexes reviewed against real queries.
 - **Transactional outbox**: write events to an outbox table in the same transaction and relay them to
   Kafka, giving at-least-once delivery without loss.
 - **Consumers**: a notification service for claim decisions (email to the claimant) with idempotency on `eventId`,

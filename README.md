@@ -10,7 +10,7 @@ in real time. The frontend is out of scope.
 |---|---|
 | Language / framework | Java 21, Spring Boot 3.4 |
 | Build | Maven |
-| Persistence | Spring Data JPA, H2 (in-memory) for the assessment, PostgreSQL recommended for production |
+| Persistence | Spring Data JPA, H2 (in-memory database) |
 | Messaging | Apache Kafka (Spring Kafka) |
 | API docs | springdoc-openapi (Swagger UI) |
 | Ops | Spring Boot Actuator |
@@ -177,15 +177,16 @@ Logs go to the console and to `logs/claims-management.log` (rolling, 10 MB, 14 d
 
 ## Database
 
-- **H2 in-memory**, created at startup; data is lost on restart. `spring.jpa.hibernate.ddl-auto=update`
+- **H2 in-memory**, bundled as the `com.h2database:h2` runtime dependency, so nothing has to be installed.
+  The database is created at startup and data is lost on restart. `spring.jpa.hibernate.ddl-auto=update`
   builds the schema from the entities.
 - **H2 console:** http://localhost:8080/h2-console – JDBC URL `jdbc:h2:mem:claimsdb`, user `sa`, empty password.
 - **Tables**
   - `claims` – claim data, status, assigned officer, audit timestamps, `version` for optimistic locking.
     Indexed on policy number, status and officer.
   - `claim_notes` – one row per note, `claim_id` foreign key, `created_at`.
-- **Production:** PostgreSQL with Flyway migrations and `ddl-auto=validate`; only the datasource settings
-  and the driver change, since the code uses standard JPA/JPQL.
+- **Tests** also run on H2 (`@DataJpaTest` and the full-context integration test), so `mvn clean install`
+  needs no external database.
 
 ## Kafka topics
 
@@ -200,19 +201,51 @@ Logs go to the console and to `logs/claims-management.log` (rolling, 10 MB, 14 d
 - Key: claim number. Value: JSON (ISO-8601 timestamps, no Java type headers). Every event has `eventId`,
   `claimId`, `claimNumber` and `occurredAt`.
 - Topics are created at startup (3 partitions, replication factor 1). Names are configurable under
-  `app.kafka.topics.*` in `application.yml`.
+  `app.kafka.topics.*` in `application.properties`.
 - Review steps (`under-review`, `request-more-info`) and plain updates do not publish events.
 - Delivery is at-least-once from the consumer's point of view; use `eventId` for de-duplication.
 
 ## Tests
 
-`mvn test` runs 82 tests:
+### Test case count
 
-- unit tests with Mockito for services, mappers' collaborators and the Kafka producer
-- MockMvc controller tests (validation, status codes, response envelope)
-- `@DataJpaTest` repository tests for the aggregation queries
-- `ClaimLifecycleIntegrationTest`: full Spring context, H2 and an embedded Kafka broker – creates, assigns,
-  approves, settles and rejects claims over HTTP and checks the events that arrive on each topic
+`mvn test` runs **82 test cases – all passing** (0 failures, 0 errors, 0 skipped):
+
+| Type | Test classes | Test cases |
+|---|---|---|
+| Unit tests (Mockito): services, workflow validator, dashboard service, Kafka producer | `ClaimServiceImplTest` (7), `ClaimWorkflowServiceImplTest` (17), `ClaimAssignmentServiceImplTest` (4), `ClaimNoteServiceImplTest` (4), `ClaimTransitionValidatorTest` (4), `DashboardServiceImplTest` (3), `ClaimEventProducerTest` (5) | 44 |
+| MockMvc controller tests (validation, status codes, response envelope) | `ClaimControllerTest` (7), `ClaimOfficerControllerTest` (6), `ClaimWorkflowControllerTest` (8), `DashboardControllerTest` (2) | 23 |
+| `@DataJpaTest` repository tests on H2 (aggregation queries) | `ClaimRepositoryTest` (10) | 10 |
+| Integration test: full Spring context, H2 and an embedded Kafka broker – creates, assigns, approves, settles and rejects claims over HTTP and checks the events that arrive on each topic | `ClaimLifecycleIntegrationTest` (5) | 5 |
+| **Total** | 13 test classes | **82** |
+
+### Test coverage
+
+Measured with JaCoCo 0.8.12 over the 45 application classes (22 Oct 2026):
+
+| Metric | Covered | Total | Coverage |
+|---|---|---|---|
+| Line | 285 | 317 | **89.9%** |
+| Instruction | 1,730 | 1,936 | 89.4% |
+| Branch | 34 | 48 | 70.8% |
+| Method | 127 | 142 | 89.4% |
+| Class | 44 | 45 | 97.8% |
+
+Line coverage by package:
+
+| Package | Line coverage |
+|---|---|
+| `config`, `repository`, `mapper`, `dashboard`, `service.workflow`, `kafka.event`, `dto.request`, `util` | 100% |
+| `kafka` (producer) | 93.3% |
+| `controller` | 92.0% |
+| `service.impl` | 88.1% |
+| `entity` | 76.9% |
+| `dto.response` | 62.5% |
+| `exception` (`GlobalExceptionHandler`) | 56.5% |
+| root (`ClaimsManagementApplication`) | 33.3% (the `main` method) |
+
+The JaCoCo plugin is configured in the `pom.xml`, so `mvn test` (or `mvn clean install`) writes the report
+to `target/site/jacoco/index.html` (CSV: `target/site/jacoco/jacoco.csv`).
 
 ## Project documents
 

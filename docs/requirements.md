@@ -30,7 +30,7 @@ claim processing progress.
 ## Technology decisions
 
 - Java 21, Spring Boot 3
-- H2 for the assessment (PostgreSQL explained for production)
+- H2 in-memory database
 - REST for synchronous operations (create, get, update, assign, dashboard)
 - Kafka for asynchronous notifications and integrations: ClaimCreated, ClaimAssigned, ClaimApproved,
   ClaimRejected, ClaimSettled

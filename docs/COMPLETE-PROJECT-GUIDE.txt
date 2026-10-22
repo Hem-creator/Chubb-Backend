@@ -1230,7 +1230,7 @@ PART 16. KNOWN LIMITATIONS AND FINDINGS (be upfront about these)
   9. APPROVED CLAIMS ARE NOT "OPEN". Their money is not in the dashboard exposure (this follows the
      project brief; it is a business question).
  10. ONLY ONE LIST FILTER APPLIES (status, then officer, then policy).
- 11. IN-MEMORY DATABASE: everything is lost on restart. Production plan: PostgreSQL with Flyway.
+ 11. IN-MEMORY DATABASE: H2 keeps everything in memory, so all data is lost on restart.
  12. SWAGGER DEFAULTS CAN HURT: the "pageable" box (500) and the pre-filled note "string" (Part 5).
  13. DASHBOARD RETURNS BARE JSON while all other APIs use the {success,message,data} envelope.
 

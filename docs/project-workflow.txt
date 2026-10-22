@@ -1,0 +1,511 @@
+=====================================================================================
+CHUBB APAC CLAIMS MANAGEMENT BACKEND - PROJECT WORKFLOW
+How to explain the project step by step using Swagger
+=====================================================================================
+
+CONTENTS
+  0. Before you start
+  1. The story in 60 seconds
+  2. Architecture in plain text
+  3. Swagger map (all 17 endpoints)
+  4. The claim lifecycle
+  5. Live demo, step by step (20 steps)
+  6. Error cases to show (400 / 404 / 409)
+  7. Kafka events
+  8. What happens inside one request
+  9. Design points to mention
+ 10. Limitations to be upfront about
+ 11. Cheat sheet: which endpoint works in which status
+
+
+=====================================================================================
+0. BEFORE YOU START
+=====================================================================================
+1) (Optional but recommended) Start Kafka:      docker compose up -d
+   Start it BEFORE the app. Without Kafka the API still works, but every call that
+   publishes an event (create, assign, approve, reject, settle) can take about 5 seconds.
+
+2) Start the app from the project folder:       mvn spring-boot:run
+   (Wait for "Started ClaimsManagementApplication" in the log.)
+
+3) Open Swagger UI:        http://localhost:8080/swagger-ui.html
+   Raw OpenAPI JSON:       http://localhost:8080/v3/api-docs
+   Database viewer:        http://localhost:8080/h2-console
+                           JDBC URL  jdbc:h2:mem:claimsdb   user: sa   password: (empty)
+                           Tables: CLAIMS and CLAIM_NOTES
+   Health check:           http://localhost:8080/actuator/health
+
+4) The database is IN MEMORY. Restarting the app gives you an empty database, so the
+   claim ids and dashboard numbers in section 5 match exactly when you start fresh.
+
+SWAGGER TIP: for the lifecycle endpoints the body is optional. When you click
+"Try it out", Swagger pre-fills {"note": "string"}. Either delete the body or type a real
+note, otherwise the word "string" is saved as a note on the claim.
+
+
+=====================================================================================
+1. THE STORY IN 60 SECONDS
+=====================================================================================
+PROBLEM
+  Chubb APAC handles motor and property claims in six markets.
+  - Claimants phone or email their claims and cannot see the status.
+  - Claims staff work from shared inboxes and spreadsheets.
+  - Managers have no live view of workload or money at risk (liability exposure).
+
+WHAT WE BUILT
+  The backend platform (no frontend). REST APIs for three kinds of users:
+  - Claimant : create a claim, track its status, send extra information when asked.
+  - Officer  : see incoming claims, assign, review, ask for information, approve, reject,
+               settle, add notes, see their own workload.
+  - Manager  : see team workload, claims by status, total liability exposure.
+
+  Every status change is checked against one set of lifecycle rules, and important
+  decisions are announced as Kafka events so other systems (e.g. email) can react.
+
+
+=====================================================================================
+2. ARCHITECTURE IN PLAIN TEXT
+=====================================================================================
+  Claimant / Officer / Manager
+              |
+              |  REST (JSON)
+              v
+  +--------------------------------------------------------------+
+  |  ONE Spring Boot application (monolith), port 8080           |
+  |                                                              |
+  |  controller   -> HTTP only (validation, status codes)        |
+  |  service      -> business rules, transactions                |
+  |  repository   -> database queries                            |
+  |  entity       -> Claim, ClaimNote                            |
+  |  kafka        -> publishes events                            |
+  |  dashboard    -> workload metrics                            |
+  +--------------------------------------------------------------+
+        |                                   |
+        v                                   v
+  H2 database (in memory)           Kafka (5 topics)
+                                           |
+                                           v
+                              future consumers: notification, reporting
+
+  - Java 21, Spring Boot 3, Spring Data JPA, H2, Kafka, springdoc (Swagger).
+  - It is a MONOLITH (one jar, one database, one transaction per request), organised
+    in layers. Kafka is used to publish events; nothing in this project consumes them.
+  - REST = synchronous work. Kafka = asynchronous notifications, so slow downstream
+    systems never slow the API down.
+  - Settings live in src/main/resources/application.properties.
+
+
+=====================================================================================
+3. SWAGGER MAP (ALL 17 ENDPOINTS)
+=====================================================================================
+In Swagger UI the endpoints appear under four groups (tags).
+
+GROUP: Claims
+  POST   /api/claims                              Create a claim            -> 201
+  GET    /api/claims                              List claims (paged)       -> 200
+                                                  filters: status, assignedOfficer, policyNumber
+  GET    /api/claims/{id}                         Get one claim             -> 200
+  GET    /api/claims/claim-number/{claimNumber}   Get by claim number       -> 200
+  PUT    /api/claims/{id}                         Update claim details      -> 200
+  DELETE /api/claims/{id}                         Delete claim + its notes  -> 200
+
+GROUP: Claim Officer
+  PUT    /api/claims/{id}/assign                  Assign / reassign officer -> 200
+  POST   /api/claims/{id}/notes                   Add a note                -> 201
+  GET    /api/claims/{id}/notes                   List notes, oldest first  -> 200
+
+GROUP: Claim Workflow
+  PUT    /api/claims/{id}/under-review            NEW or MORE_INFO_REQUIRED -> UNDER_REVIEW
+  PUT    /api/claims/{id}/request-more-info       UNDER_REVIEW -> MORE_INFO_REQUIRED
+  POST   /api/claims/{id}/additional-info         MORE_INFO_REQUIRED -> UNDER_REVIEW (claimant)
+  PUT    /api/claims/{id}/approve                 UNDER_REVIEW -> APPROVED
+  PUT    /api/claims/{id}/reject                  UNDER_REVIEW -> REJECTED
+  PUT    /api/claims/{id}/settle                  APPROVED -> SETTLED
+
+GROUP: Dashboard
+  GET    /api/dashboard/workload                  Manager: team workload and exposure
+  GET    /api/officers/{officer}/workload         Officer: personal workload
+
+RESPONSE SHAPE
+  Claim, note and workflow endpoints:   { "success": true, "message": "...", "data": {...} }
+  Both dashboard endpoints return plain JSON (exactly the shape the brief specified).
+  Errors use the same envelope with "success": false.
+
+
+=====================================================================================
+4. THE CLAIM LIFECYCLE
+=====================================================================================
+
+   create
+     |
+     v
+    NEW ---------> UNDER_REVIEW ---------> APPROVED ---------> SETTLED   (final)
+                    |       ^  |
+      request-more-info     |  +-------------> REJECTED                  (final)
+                    |       |
+                    v       | additional-info (claimant)  or  under-review
+              MORE_INFO_REQUIRED
+
+  Allowed moves (and the endpoint that does each):
+    NEW                 -> UNDER_REVIEW         PUT  /under-review
+    UNDER_REVIEW        -> MORE_INFO_REQUIRED   PUT  /request-more-info
+    MORE_INFO_REQUIRED  -> UNDER_REVIEW         POST /additional-info  (or PUT /under-review)
+    UNDER_REVIEW        -> APPROVED             PUT  /approve
+    UNDER_REVIEW        -> REJECTED             PUT  /reject
+    APPROVED            -> SETTLED              PUT  /settle
+
+  Anything else is refused with HTTP 409 (BusinessException).
+  REJECTED and SETTLED are FINAL: the claim cannot be edited or reassigned any more
+  (notes can still be added so the history stays complete).
+
+  WHERE THE RULES LIVE: one class, ClaimTransitionValidator. Every status change in the
+  application goes through it, so a new state or rule is a change in one place.
+
+
+=====================================================================================
+5. LIVE DEMO, STEP BY STEP (20 STEPS)
+=====================================================================================
+We follow two claims: Claim A goes all the way to SETTLED, Claim B ends REJECTED.
+Ids below assume a fresh start (Claim A = id 1, Claim B = id 2).
+
+-------------------------------------------------------------------------------------
+STEP 1 - Claimant creates Claim A
+  Swagger group : Claims
+  Endpoint      : POST /api/claims
+  Body:
+    {
+      "claimantName": "Asha Rao",
+      "claimantEmail": "asha@example.com",
+      "policyNumber": "POL-1001",
+      "description": "Rear-end collision on highway",
+      "incidentDate": "2026-10-10",
+      "claimAmount": 50000,
+      "liabilityExposure": 40000
+    }
+  Expect        : 201 Created. data.id = 1, data.claimNumber = CLM-XXXXXXXXXXXX,
+                  data.status = NEW. No assignedOfficer yet.
+  Explain       : The claim number is generated by the system. The initial status is always
+                  NEW. Input is validated (see section 6).
+  Event         : claim-created
+
+-------------------------------------------------------------------------------------
+STEP 2 - Claimant creates Claim B
+  Endpoint      : POST /api/claims
+  Body:
+    {
+      "claimantName": "Ravi Menon",
+      "claimantEmail": "ravi@example.com",
+      "policyNumber": "POL-2002",
+      "description": "Water damage to insured property",
+      "incidentDate": "2026-10-12",
+      "claimAmount": 20000,
+      "liabilityExposure": 15000
+    }
+  Expect        : 201 Created. data.id = 2, status NEW.
+  Event         : claim-created
+
+-------------------------------------------------------------------------------------
+STEP 3 - Manager looks at the dashboard
+  Swagger group : Dashboard
+  Endpoint      : GET /api/dashboard/workload
+  Expect        : totalOpenClaims 2
+                  totalLiabilityExposure 55000.00
+                  claimsByStatus  NEW 2, every other status 0
+                  claimsPerOfficer  {} (empty: nobody is assigned yet)
+  Explain       : "Open" = NEW, UNDER_REVIEW, MORE_INFO_REQUIRED. Exposure is the sum
+                  over open claims. Unassigned claims are not counted per officer.
+                  Every status is always listed (0 when empty), so clients never have to
+                  handle missing keys.
+
+-------------------------------------------------------------------------------------
+STEP 4 - Officer views incoming claims
+  Swagger group : Claims
+  Endpoint      : GET /api/claims      parameter: status = NEW
+  Expect        : a paged list: data.content holds both claims (newest first, 20 per page by
+                  default), plus page, size, totalElements and totalPages.
+  Explain       : Filters are status, assignedOfficer or policyNumber (only one is applied,
+                  in that order). The claimant can track a claim with
+                  GET /api/claims/{id} or GET /api/claims/claim-number/{claimNumber}.
+
+-------------------------------------------------------------------------------------
+STEP 5 - Officer assigns Claim A to John Smith
+  Swagger group : Claim Officer
+  Endpoint      : PUT /api/claims/1/assign
+  Body          : { "officer": "John Smith" }
+  Expect        : 200. data.assignedOfficer = "John Smith". Status is still NEW.
+  Explain       : Assignment does not change the status. It is independent of the workflow.
+  Event         : claim-assigned
+
+-------------------------------------------------------------------------------------
+STEP 6 - Officer assigns Claim B to Mike
+  Endpoint      : PUT /api/claims/2/assign
+  Body          : { "officer": "Mike" }
+  Expect        : 200. data.assignedOfficer = "Mike".
+  Event         : claim-assigned
+
+-------------------------------------------------------------------------------------
+STEP 7 - Officer starts reviewing Claim A
+  Swagger group : Claim Workflow
+  Endpoint      : PUT /api/claims/1/under-review
+  Body          : leave empty (or { "note": "Starting review" })
+  Expect        : 200 "Claim moved to review". data.status = UNDER_REVIEW.
+  Explain       : NEW -> UNDER_REVIEW is allowed. An optional note is stored as a
+                  ClaimNote. Review steps do not publish a Kafka event.
+
+-------------------------------------------------------------------------------------
+STEP 8 - Officer adds a note
+  Swagger group : Claim Officer
+  Endpoint      : POST /api/claims/1/notes
+  Body          : { "note": "Requested repair invoice." }
+  Expect        : 201 "Note added successfully".
+  Explain       : A claim can have many notes. They live in their own table
+                  (claim_notes) linked to the claim.
+
+-------------------------------------------------------------------------------------
+STEP 9 - Officer checks their personal workload
+  Swagger group : Dashboard
+  Endpoint      : GET /api/officers/{officer}/workload      officer = John Smith
+  Expect        : officer "John Smith", openClaims 1, totalLiabilityExposure 40000.00,
+                  claimsByStatus UNDER_REVIEW 1 (others 0).
+  Explain       : The officer name must match exactly what was used in assign.
+
+-------------------------------------------------------------------------------------
+STEP 10 - Officer asks for more information
+  Swagger group : Claim Workflow
+  Endpoint      : PUT /api/claims/1/request-more-info
+  Body          : { "note": "Please upload the repair invoice" }
+  Expect        : 200 "More information requested". data.status = MORE_INFO_REQUIRED.
+
+-------------------------------------------------------------------------------------
+STEP 11 - Claimant sends the information
+  Swagger group : Claim Workflow
+  Endpoint      : POST /api/claims/1/additional-info
+  Body          : { "information": "Repair invoice INV-2231 for 38,500 attached" }
+  Expect        : 200 "Additional information received, claim is back under review".
+                  data.status = UNDER_REVIEW.
+  Explain       : Only works while the claim is MORE_INFO_REQUIRED. The text is stored as
+                  a note starting with "Additional information from claimant: ".
+                  This loop (review -> more info -> review) can repeat as often as needed.
+
+-------------------------------------------------------------------------------------
+STEP 12 - Show the rules being enforced (expected failure)
+  Endpoint      : PUT /api/claims/1/settle
+  Expect        : 409 Conflict. message "Invalid status transition: UNDER_REVIEW -> SETTLED.
+                  Allowed from UNDER_REVIEW: [MORE_INFO_REQUIRED, APPROVED, REJECTED]"
+                  (the order of the three allowed states in the list can differ).
+  Explain       : You cannot settle a claim that has not been approved. The rule is in one
+                  class and is applied to every status change.
+
+-------------------------------------------------------------------------------------
+STEP 13 - Officer approves Claim A
+  Endpoint      : PUT /api/claims/1/approve
+  Body          : { "note": "Invoice verified" }
+  Expect        : 200 "Claim approved". data.status = APPROVED.
+  Event         : claim-approved
+
+-------------------------------------------------------------------------------------
+STEP 14 - Dashboard again (the numbers move)
+  Endpoint      : GET /api/dashboard/workload
+  Expect        : totalOpenClaims 1 (only Claim B)
+                  totalLiabilityExposure 15000.00
+                  claimsByStatus  NEW 1, APPROVED 1
+                  claimsPerOfficer  Mike 1 (John Smith's claim is no longer open)
+  Explain       : APPROVED is NOT counted as open or as exposure. That follows the
+                  brief's definition of open claims. Whether approved-but-unpaid claims
+                  should count as exposure is a business question worth raising.
+
+-------------------------------------------------------------------------------------
+STEP 15 - Officer settles Claim A
+  Endpoint      : PUT /api/claims/1/settle
+  Body          : { "note": "Payment released" }
+  Expect        : 200 "Claim settled". data.status = SETTLED.
+  Event         : claim-settled
+
+-------------------------------------------------------------------------------------
+STEP 16 - Show that a final claim is protected
+  a) Group Claims         PUT /api/claims/1       (send a normal update body, see below)
+     Expect  409 "Claim 1 can no longer be edited (status: SETTLED)"
+     Body:
+       {
+         "claimantName": "Asha Rao",
+         "claimantEmail": "asha@example.com",
+         "description": "Rear-end collision on highway",
+         "incidentDate": "2026-10-10",
+         "claimAmount": 50000,
+         "liabilityExposure": 40000
+       }
+  b) Group Claim Officer  PUT /api/claims/1/assign   { "officer": "Mike" }
+     Expect  409 "Claim 1 cannot be assigned because it is SETTLED"
+  c) Group Claim Officer  POST /api/claims/1/notes   { "note": "Closing remark" }
+     Expect  201 (notes are still allowed on final claims)
+
+-------------------------------------------------------------------------------------
+STEP 17 - The rejection path (Claim B)
+  a) Group Claim Workflow  PUT /api/claims/2/under-review
+     Expect  200, status UNDER_REVIEW
+  b) Group Claim Workflow  PUT /api/claims/2/reject
+     Body    { "note": "Policy exclusion applies" }
+     Expect  200 "Claim rejected", status REJECTED
+     Event   claim-rejected (the note travels with the event as the rejection reason)
+
+-------------------------------------------------------------------------------------
+STEP 18 - Show the full history of Claim A
+  Swagger group : Claim Officer
+  Endpoint      : GET /api/claims/1/notes
+  Expect        : all notes oldest first: the manual note, "Please upload the repair
+                  invoice", the claimant's additional information, "Invoice verified",
+                  "Payment released", "Closing remark".
+  Explain       : Notes added during transitions are saved here too, so this is the
+                  audit trail of what happened and why.
+
+-------------------------------------------------------------------------------------
+STEP 19 - Final dashboard
+  Endpoint      : GET /api/dashboard/workload
+  Expect        : totalOpenClaims 0, totalLiabilityExposure 0,
+                  claimsByStatus  SETTLED 1, REJECTED 1, all others 0,
+                  claimsPerOfficer  {}
+
+-------------------------------------------------------------------------------------
+STEP 20 (optional) - Claimant tracks by claim number
+  Swagger group : Claims
+  Endpoint      : GET /api/claims/claim-number/{claimNumber}
+                  (paste the CLM-... number from Step 1)
+  Expect        : 200 with the claim and its current status SETTLED.
+  Explain       : This is how a claimant "tracks claim status" without knowing the
+                  internal id.
+
+OPTIONAL: open http://localhost:8080/h2-console and run
+    SELECT * FROM CLAIMS;      SELECT * FROM CLAIM_NOTES;
+to show the stored data (status, assigned officer, version, timestamps).
+
+
+=====================================================================================
+6. ERROR CASES TO SHOW (400 / 404 / 409)
+=====================================================================================
+All errors use the same envelope: { "success": false, "message": "...", "data": ... }
+
+400 BAD REQUEST - validation failed
+  Endpoint : POST /api/claims
+  Body     : { "claimantName": "", "claimantEmail": "not-an-email", "policyNumber": "POL-1",
+               "description": "x", "incidentDate": "2026-10-10",
+               "claimAmount": 0, "liabilityExposure": 10 }
+  Expect   : message "Validation failed". data lists each bad field and why, e.g.
+             claimantName is mandatory, claimantEmail must be a valid email address,
+             claimAmount must be greater than 0.
+  Rules    : claimantName / description / policyNumber mandatory, valid email,
+             incidentDate not in the future, claimAmount > 0, liabilityExposure > 0.
+
+404 NOT FOUND
+  Endpoint : GET /api/claims/9999
+  Expect   : message "Claim not found with id: 9999".
+
+409 CONFLICT - four different reasons
+  1. Invalid transition        e.g. PUT /settle on an UNDER_REVIEW claim (Step 12)
+  2. Final claim protected     edit or assign on SETTLED / REJECTED (Step 16)
+  3. Wrong time for extra info POST /additional-info when the claim is not
+                               MORE_INFO_REQUIRED:
+                               "Additional information can only be submitted while the
+                               claim is MORE_INFO_REQUIRED (current: ...)"
+  4. Concurrent update         "The claim was modified concurrently, please retry"
+                               (two officers saving the same claim at once; the second
+                               one loses. Protected by optimistic locking, @Version.)
+
+
+=====================================================================================
+7. KAFKA EVENTS
+=====================================================================================
+  TOPIC            PUBLISHED WHEN                         ENDPOINT
+  claim-created    a claim is created                     POST /api/claims
+  claim-assigned   a claim is assigned                    PUT  /{id}/assign
+  claim-approved   a claim is approved                    PUT  /{id}/approve
+  claim-rejected   a claim is rejected (with the reason)  PUT  /{id}/reject
+  claim-settled    a claim is settled                     PUT  /{id}/settle
+
+  Not published: under-review, request-more-info, additional-info, notes, plain updates.
+
+  - Each topic has 3 partitions and is created at application start.
+  - Message key = claim number, so all events of one claim stay in order.
+  - Message value = JSON (ISO dates, no Java type headers) with eventId, claimId,
+    claimNumber, occurredAt plus event-specific fields.
+  - Events are sent AFTER the database commit, so nothing is announced for data that was
+    rolled back. Sending is best-effort: if Kafka is down the failure is logged and the
+    API call still succeeds.
+  - Nothing in this project consumes the events; they are for future notification and
+    reporting systems. This is how "claimant receives decisions" is supported today.
+
+  TO SHOW EVENTS ARRIVING (Kafka running via docker compose; command not tested here):
+    docker exec -it claims-kafka /opt/kafka/bin/kafka-console-consumer.sh --bootstrap-server localhost:9092 --topic claim-approved --from-beginning
+  Change the topic name to watch another event. Run the demo steps in another window.
+
+
+=====================================================================================
+8. WHAT HAPPENS INSIDE ONE REQUEST (example: approve)
+=====================================================================================
+  PUT /api/claims/1/approve
+    1. ClaimWorkflowController receives the request.
+    2. The service loads the claim (404 if missing).
+    3. ClaimTransitionValidator checks UNDER_REVIEW -> APPROVED is allowed (409 if not).
+    4. Status is set, the optional note is saved as a ClaimNote, the claim is saved.
+       All of this is ONE database transaction.
+    5. After the commit succeeds, ClaimEventProducer sends the event to claim-approved.
+    6. The response is wrapped in { success, message, data } and returned.
+    Any exception on the way is converted to the error envelope by
+    GlobalExceptionHandler (400 / 404 / 409 / 500).
+
+
+=====================================================================================
+9. DESIGN POINTS TO MENTION
+=====================================================================================
+  - One class owns the lifecycle rules (ClaimTransitionValidator).
+  - Layered monolith: controller -> service -> repository, easy to test and to split later.
+  - Events after commit: no events for rolled-back data; broker outage never breaks the API.
+  - Optimistic locking (@Version): two officers cannot silently overwrite each other.
+  - Dashboard numbers are database aggregations (count / sum / group by); no claim rows
+    are loaded into memory.
+  - "Open" claims are defined once (NEW, UNDER_REVIEW, MORE_INFO_REQUIRED).
+  - Notes are separate rows, so the history is never lost.
+  - Validation on the way in; one consistent error format on the way out.
+  - 82 automated tests: unit tests (Mockito), controller tests (MockMvc), repository tests
+    (JPA against H2) and an end-to-end test with an embedded Kafka broker.
+  - H2 in-memory database (zero setup, nothing to install).
+
+
+=====================================================================================
+10. LIMITATIONS TO BE UPFRONT ABOUT
+=====================================================================================
+  - No authentication or roles: any caller can use any endpoint (e.g. a claimant could
+    call approve). Planned: OAuth2/OIDC with claimant / officer / manager roles.
+  - No notification consumer: events are published but no email is sent yet.
+  - Event delivery is best-effort: an event can be lost if the app dies right after a
+    commit. Fix: transactional outbox (listed as future work).
+  - APPROVED claims are not counted as open exposure (follows the brief; business question).
+  - DELETE works on a claim in any status (there is no status check).
+  - The officer is just a name (text), not an officer record.
+  - Not done: a run against an external Kafka broker in production-like conditions, and
+    load testing.
+
+
+=====================================================================================
+11. CHEAT SHEET: WHICH ENDPOINT WORKS IN WHICH STATUS
+=====================================================================================
+  CURRENT STATUS        ENDPOINTS THAT MOVE THE CLAIM            ALSO ALLOWED
+  NEW                   PUT /under-review                        assign, notes, update
+  UNDER_REVIEW          PUT /request-more-info                   assign, notes, update
+                        PUT /approve
+                        PUT /reject
+  MORE_INFO_REQUIRED    POST /additional-info                    assign, notes, update
+                        PUT /under-review
+  APPROVED              PUT /settle                              assign, notes, update
+  REJECTED  (final)     none                                     notes only
+  SETTLED   (final)     none                                     notes only
+
+  WHO USES WHAT
+  Claimant : POST /api/claims, GET /api/claims/{id}, GET /api/claims/claim-number/{n},
+             POST /api/claims/{id}/additional-info
+  Officer  : GET /api/claims, assign, under-review, request-more-info, approve, reject,
+             settle, notes, GET /api/officers/{officer}/workload
+  Manager  : GET /api/dashboard/workload
+
+=====================================================================================
+END
+=====================================================================================
